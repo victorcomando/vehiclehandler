@@ -1,6 +1,15 @@
 return {
-    units = 'mph' ,             -- (mph, kmh)
+    units = 'kmh' ,             -- (mph, kmh)
     breaktire = true,           -- Enable/Disable breaking off vehicle wheel on impact
+    fall = {
+        enabled = true,
+        minHeight = 6.0,
+        minSpeed = 30.0,
+    },
+    burst = {
+        degradation = 10,
+        thresholdSpeed = 10.0,
+    },
     threshold = {
         health = 50.0,          -- Health difference needed to break off wheel (LastHealth - CurrentHealth)
         speed  = 50.0,          -- Speed difference needed to break off wheel (LastSpeed - CurrentSpeed)

@@ -10,6 +10,11 @@ local BONES <const> = {
             'wheel_rr'
 }
 
+local BIKE_BONES <const> = {
+    [0] = { 'wheel_mf', 'wheel_front', 'wheel_lf' },
+    [1] = { 'wheel_mr', 'wheel_rear', 'wheel_rf' }
+}
+
 ---@class privateHandlerData
 ---@field active boolean
 ---@field limited boolean
@@ -165,16 +170,44 @@ function Handler:breakTire(vehicle, index)
     if vehicle == nil or type(vehicle) ~= 'number' then return end
     if index == nil or type(index) ~= 'number' then return end
 
-    local bone = GetEntityBoneIndexByName(vehicle, BONES[index])
-    if bone == -1 then return end
+    local class = self:getClass()
+    local candidates = BONES[index]
+
+    if class == 8 and BIKE_BONES[index] then
+        candidates = BIKE_BONES[index]
+    end
+
+    if type(candidates) == 'string' then
+        candidates = { candidates }
+    end
+
+    if candidates == nil then return end
+
+    local hasBone = false
+
+    for _, name in ipairs(candidates) do
+        local bone = GetEntityBoneIndexByName(vehicle, name)
+
+        if bone ~= -1 then
+            hasBone = true
+            break
+        end
+    end
+
+    if not hasBone then return end
 
     if not IsVehicleTyreBurst(vehicle, index, true) then
+        local success = true
 
         lib.callback('vehiclehandler:sync', false, function()
             SetVehicleTyreBurst(vehicle, index, true, 1000.0)
             BreakOffVehicleWheel(vehicle, index, false, true, true, false)
         end)
+
+        return success
     end
+
+    return false
 end
 
 ---@param vehicle number

@@ -5,6 +5,75 @@ lib.locale()
 local Handler = require 'modules.handler'
 local Settings <const> = lib.load('data.vehicle')
 local Units <const> = Settings.units == 'mph' and 2.23694 or 3.6
+local FallSettings <const> = Settings.fall
+local BurstSettings <const> = Settings.burst
+local ImpactAngle <const> = 12.0
+local FRONT_WHEELS <const> = {0, 1}
+local MIDDLE_WHEELS <const> = {2, 3}
+local REAR_WHEELS <const> = {4, 5}
+local LEFT_WHEELS <const> = {0, 2, 4}
+local RIGHT_WHEELS <const> = {1, 3, 5}
+local ALL_WHEELS <const> = {0, 1, 4, 5, 2, 3}
+
+local function insertUnique(list, value)
+    for i = 1, #list do
+        if list[i] == value then return end
+    end
+
+    list[#list + 1] = value
+end
+
+local function mergeWheels(target, source)
+    for i = 1, #source do
+        insertUnique(target, source[i])
+    end
+end
+
+local function resolveImpactWheels(vehicle, class)
+    local rotation = GetEntityRotation(vehicle, 2)
+    local pitch = rotation.x
+    local roll = GetEntityRoll(vehicle)
+    local absPitch = math.abs(pitch)
+    local absRoll = math.abs(roll)
+    local inverted = absPitch > 95.0 or absRoll > 95.0
+    local wheels = {}
+
+    if class == 8 then
+        if pitch <= -ImpactAngle then mergeWheels(wheels, FRONT_WHEELS) end
+        if pitch >= ImpactAngle then mergeWheels(wheels, REAR_WHEELS) end
+
+        if absRoll >= ImpactAngle then
+            mergeWheels(wheels, FRONT_WHEELS)
+            mergeWheels(wheels, REAR_WHEELS)
+        end
+
+        if inverted or #wheels == 0 then
+            mergeWheels(wheels, FRONT_WHEELS)
+            mergeWheels(wheels, REAR_WHEELS)
+        end
+
+        return wheels
+    end
+
+    if pitch <= -ImpactAngle then mergeWheels(wheels, FRONT_WHEELS) end
+    if pitch >= ImpactAngle then mergeWheels(wheels, REAR_WHEELS) end
+    if roll >= ImpactAngle then mergeWheels(wheels, LEFT_WHEELS) end
+    if roll <= -ImpactAngle then mergeWheels(wheels, RIGHT_WHEELS) end
+
+    if absPitch >= ImpactAngle and absRoll >= ImpactAngle then
+        mergeWheels(wheels, MIDDLE_WHEELS)
+    end
+
+    if inverted then
+        mergeWheels(wheels, FRONT_WHEELS)
+        mergeWheels(wheels, REAR_WHEELS)
+        mergeWheels(wheels, MIDDLE_WHEELS)
+    end
+
+    if #wheels == 0 then mergeWheels(wheels, ALL_WHEELS) end
+
+    return wheels
+end
 
 ---@param vehicle number
 local function startThread(vehicle)
@@ -17,6 +86,12 @@ local function startThread(vehicle)
     local electric = Handler:isElectric()
     local class = Handler:getClass()
     local model = Handler:getModel()
+    local fallEnabled = Settings.breaktire and FallSettings and FallSettings.enabled
+    local wasAirborne = false
+    local fallMaxZ = 0.0
+    local fallMinZ = 0.0
+    local fallImpactSpeed = 0.0
+    local burstTimer = 0
 
     CreateThread(function()
         while (cache.vehicle == vehicle) and (cache.seat == -1) do
@@ -27,6 +102,9 @@ local function startThread(vehicle)
                 ['body'] = GetVehicleBodyHealth(vehicle),
                 ['speed'] = GetEntitySpeed(vehicle) * Units
             })
+            local velocity = GetEntityVelocity(vehicle)
+            local horizontalSpeed = math.sqrt((velocity.x * velocity.x) + (velocity.y * velocity.y)) * Units
+            local coords = GetEntityCoords(vehicle)
 
             -- Prevent negative engine health & driveability handler (engine)
             if engine <= 0 then
@@ -98,6 +176,74 @@ local function startThread(vehicle)
                     end
                 else
                     if not Handler:canControl() then Handler:setControl(true) end
+                end
+            end
+
+            if fallEnabled then
+                local airborneState = IsEntityInAir(vehicle)
+
+                if airborneState then
+                    local velocity = GetEntityVelocity(vehicle)
+                    fallImpactSpeed = math.max(fallImpactSpeed, math.abs(velocity.z) * Units)
+
+                    if not wasAirborne then
+                        wasAirborne = true
+                        fallMaxZ = coords.z
+                        fallMinZ = coords.z
+                    else
+                        if coords.z > fallMaxZ then
+                            fallMaxZ = coords.z
+                        end
+
+                        if coords.z < fallMinZ then
+                            fallMinZ = coords.z
+                        end
+                    end
+                elseif wasAirborne then
+                    local dropHeight = fallMaxZ - fallMinZ
+
+                    if dropHeight >= FallSettings.minHeight and fallImpactSpeed >= FallSettings.minSpeed then
+                        local impactWheels = resolveImpactWheels(vehicle, class)
+
+                        for i = 1, #impactWheels do
+                            Handler:breakTire(vehicle, impactWheels[i])
+                        end
+                    end
+
+                    wasAirborne = false
+                    fallMaxZ = 0.0
+                    fallMinZ = 0.0
+                    fallImpactSpeed = 0.0
+                end
+            end
+
+            if BurstSettings then
+                local hasBurst = false
+
+                for i = 0, 5 do
+                    if IsVehicleTyreBurst(vehicle, i, true) then
+                        hasBurst = true
+                        break
+                    end
+                end
+
+                if hasBurst and horizontalSpeed >= BurstSettings.thresholdSpeed then
+                    burstTimer = burstTimer + 300
+
+                    if burstTimer >= 900 then
+                        burstTimer = 0
+
+                        local degradation = BurstSettings.degradation or 1.0
+                        local newEngine = math.max(engine - degradation, -1000.0)
+                        local newBody = math.max(body - (degradation * 0.5), 0.0)
+
+                        lib.callback('vehiclehandler:sync', false, function()
+                            SetVehicleEngineHealth(vehicle, newEngine)
+                            SetVehicleBodyHealth(vehicle, newBody)
+                        end)
+                    end
+                else
+                    burstTimer = 0
                 end
             end
 
